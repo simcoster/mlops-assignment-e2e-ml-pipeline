@@ -49,7 +49,7 @@ def subprocess_env() -> dict[str, str]:
 
 def build_run_config(params: dict) -> dict:
     run_id = (params.get("run_id") or "").strip()
-    if not run_id:
+    if not run_id or run_id.lower() == "auto":
         run_id = datetime.now(timezone.utc).strftime("run-%Y%m%d-%H%M%S")
 
     subset = params["subset"]
@@ -165,6 +165,15 @@ def run_swebench_eval(run_config: dict, preds_path: Path, run_dir: Path) -> Path
     return aggregate_in_reports
 
 
+def numeric_metrics_for_mlflow(metrics: dict) -> dict:
+    """MLflow metrics must be numeric; exclude string fields like run_id."""
+    return {
+        key: float(value)
+        for key, value in metrics.items()
+        if isinstance(value, (int, float)) and not isinstance(value, bool)
+    }
+
+
 def collect_metrics(eval_report_path: Path) -> dict:
     report = json.loads(eval_report_path.read_text())
     submitted = report.get("submitted_instances", 0)
@@ -193,7 +202,7 @@ def log_mlflow_run(run_config: dict, metrics: dict, artifact_uri: str) -> None:
     payload = {
         "tracking_uri": tracking_uri,
         "run_config": run_config,
-        "metrics": metrics,
+        "metrics": numeric_metrics_for_mlflow(metrics),
         "artifact_uri": artifact_uri,
     }
     script = """
@@ -249,7 +258,11 @@ with mlflow.start_run(run_name=run_config["run_id"]):
             description="Model passed to mini-swe-agent",
         ),
         "task_slice": Param("0:3", type="string", description="Instance slice, e.g. 0:3"),
-        "run_id": Param("", type="string", description="Run ID (auto-generated if empty)"),
+        "run_id": Param(
+            "auto",
+            type="string",
+            description="Run ID ('auto' or empty = auto-generated timestamp)",
+        ),
         "cost_limit": Param(0, type="number", description="Agent cost limit (0 = disabled)"),
     },
 )

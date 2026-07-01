@@ -1,0 +1,10 @@
+# Cursor/VS Code terminal init: load normal shell config, then project venv.
+if [[ -f "${HOME}/.bashrc" ]]; then
+  source "${HOME}/.bashrc"
+fi
+
+_VENV_ACTIVATE="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/.venv/bin/activate"
+if [[ -f "${_VENV_ACTIVATE}" ]]; then
+  source "${_VENV_ACTIVATE}"
+fi
+unset _VENV_ACTIVATE
