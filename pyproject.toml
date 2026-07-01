@@ -6,6 +6,7 @@ readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
     "mini-swe-agent>=2.4.1",
+    "mlflow>=2.20.0",
     "swebench>=4.1.0",
 ]
 

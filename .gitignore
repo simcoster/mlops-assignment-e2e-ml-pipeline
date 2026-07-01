@@ -8,5 +8,7 @@ __pycache__
 
 /logs/
 
+/runs/
+
 mini-swe-agent/
 SWE-bench/
