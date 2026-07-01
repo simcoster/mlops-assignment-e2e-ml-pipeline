@@ -7,8 +7,10 @@ import logging
 import os
 import shutil
 import subprocess
+import tarfile
 from datetime import datetime, timezone
 from pathlib import Path
+from urllib.parse import urlparse
 
 from airflow.decorators import dag, task
 from airflow.models.param import Param
@@ -98,16 +100,36 @@ def build_run_config(params: dict) -> dict:
 def prepare_run_dir(run_config: dict) -> Path:
     run_dir = RUNS_ROOT / run_config["run_id"]
     agent_dir = run_dir / "run-agent"
+    trajectories_dir = agent_dir / "trajectories"
     eval_dir = run_dir / "run-eval"
     logs_dir = eval_dir / "logs"
     reports_dir = eval_dir / "reports"
 
-    for path in (agent_dir, logs_dir, reports_dir):
+    for path in (agent_dir, trajectories_dir, logs_dir, reports_dir):
         path.mkdir(parents=True, exist_ok=True)
 
     config_path = run_dir / "config.json"
     config_path.write_text(json.dumps(run_config, indent=2) + "\n")
     return run_dir
+
+
+def organize_agent_artifacts(agent_dir: Path) -> Path:
+    """Move per-instance outputs into run-agent/trajectories/."""
+    trajectories_dir = agent_dir / "trajectories"
+    trajectories_dir.mkdir(parents=True, exist_ok=True)
+
+    for path in list(agent_dir.iterdir()):
+        if path.name in {"preds.json", "trajectories"}:
+            continue
+        dest = trajectories_dir / path.name
+        if dest.exists():
+            if dest.is_dir():
+                shutil.rmtree(dest)
+            else:
+                dest.unlink()
+        shutil.move(str(path), str(dest))
+
+    return trajectories_dir
 
 
 def run_agent_batch(run_config: dict, run_dir: Path) -> Path:
@@ -138,6 +160,7 @@ def run_agent_batch(run_config: dict, run_dir: Path) -> Path:
     preds_path = agent_dir / "preds.json"
     if not preds_path.exists():
         raise FileNotFoundError(f"Expected predictions file at {preds_path}")
+    organize_agent_artifacts(agent_dir)
     return preds_path
 
 
@@ -220,7 +243,100 @@ def collect_metrics(eval_report_path: Path) -> dict:
     }
 
 
-def log_mlflow_run(run_config: dict, metrics: dict, artifact_uri: str) -> None:
+def build_manifest(
+    run_dir: Path,
+    run_config: dict,
+    eval_report_path: Path,
+    remote_artifact_uri: str | None = None,
+) -> dict:
+    agent_dir = run_dir / "run-agent"
+    trajectories_dir = agent_dir / "trajectories"
+    agent_log = trajectories_dir / "minisweagent.log"
+
+    manifest = {
+        "run_id": run_config["run_id"],
+        "artifact_root": str(run_dir.resolve()),
+        "config": str((run_dir / "config.json").resolve()),
+        "preds": str((agent_dir / "preds.json").resolve()),
+        "trajectories": str(trajectories_dir.resolve()),
+        "trajectory_files": sorted(str(path.resolve()) for path in trajectories_dir.rglob("*.traj.json")),
+        "eval_report": str(eval_report_path.resolve()),
+        "eval_logs": str((run_dir / "run-eval" / "logs").resolve()),
+        "eval_reports": str((run_dir / "run-eval" / "reports").resolve()),
+        "metrics": str((run_dir / "metrics.json").resolve()),
+    }
+    if agent_log.exists():
+        manifest["agent_log"] = str(agent_log.resolve())
+    if remote_artifact_uri:
+        manifest["remote_artifact_uri"] = remote_artifact_uri
+    return manifest
+
+
+def _object_storage_settings() -> dict[str, str]:
+    file_env = load_env_file(PROJECT_ROOT / ".env")
+    return {
+        key: os.getenv(key, file_env.get(key, "")).strip()
+        for key in (
+            "ARTIFACTS_S3_URI",
+            "S3_BUCKET",
+            "S3_PREFIX",
+            "AWS_ACCESS_KEY_ID",
+            "AWS_SECRET_ACCESS_KEY",
+            "AWS_DEFAULT_REGION",
+            "AWS_ENDPOINT_URL",
+        )
+    }
+
+
+def create_run_archive(run_dir: Path) -> Path:
+    archive_path = run_dir.with_suffix(".tar.gz")
+    if archive_path.exists():
+        archive_path.unlink()
+    with tarfile.open(archive_path, "w:gz") as archive:
+        archive.add(run_dir, arcname=run_dir.name)
+    return archive_path
+
+
+def upload_run_to_object_storage(run_dir: Path, run_id: str) -> str | None:
+    settings = _object_storage_settings()
+    bucket = settings["S3_BUCKET"]
+    prefix = settings["S3_PREFIX"].strip("/") or "runs"
+    configured_uri = settings["ARTIFACTS_S3_URI"]
+
+    if configured_uri:
+        parsed = urlparse(configured_uri)
+        if parsed.scheme != "s3" or not parsed.netloc:
+            raise ValueError(f"ARTIFACTS_S3_URI must look like s3://bucket/prefix, got {configured_uri!r}")
+        bucket = parsed.netloc
+        prefix = parsed.path.strip("/")
+
+    if not bucket:
+        return None
+
+    import boto3
+    from botocore.config import Config
+
+    archive_path = create_run_archive(run_dir)
+    key = "/".join(part for part in (prefix, f"{run_id}.tar.gz") if part)
+
+    client_kwargs: dict = {}
+    if settings["AWS_ENDPOINT_URL"]:
+        client_kwargs["endpoint_url"] = settings["AWS_ENDPOINT_URL"]
+    if settings["AWS_DEFAULT_REGION"]:
+        client_kwargs["region_name"] = settings["AWS_DEFAULT_REGION"]
+
+    client = boto3.client("s3", config=Config(signature_version="s3v4"), **client_kwargs)
+    client.upload_file(str(archive_path), bucket, key)
+    archive_path.unlink(missing_ok=True)
+    return f"s3://{bucket}/{key}"
+
+
+def log_mlflow_run(
+    run_config: dict,
+    metrics: dict,
+    artifact_uri: str,
+    remote_artifact_uri: str | None = None,
+) -> None:
     tracking_uri = os.getenv(
         "MLFLOW_TRACKING_URI",
         load_env_file(PROJECT_ROOT / ".env").get("MLFLOW_TRACKING_URI", "http://127.0.0.1:5000"),
@@ -230,6 +346,7 @@ def log_mlflow_run(run_config: dict, metrics: dict, artifact_uri: str) -> None:
         "run_config": run_config,
         "metrics": numeric_metrics_for_mlflow(metrics),
         "artifact_uri": artifact_uri,
+        "remote_artifact_uri": remote_artifact_uri,
     }
     script = """
 import json, os, sys
@@ -239,6 +356,7 @@ payload = json.loads(os.environ["MLFLOW_PAYLOAD"])
 run_config = payload["run_config"]
 metrics = payload["metrics"]
 artifact_uri = payload["artifact_uri"]
+remote_artifact_uri = payload.get("remote_artifact_uri")
 
 mlflow.set_tracking_uri(payload["tracking_uri"])
 mlflow.set_experiment("evaluate_agent")
@@ -255,9 +373,15 @@ with mlflow.start_run(run_name=run_config["run_id"]):
     })
     mlflow.log_metrics(metrics)
     mlflow.set_tag("artifact_path", artifact_uri)
+    if remote_artifact_uri:
+        mlflow.log_param("remote_artifact_uri", remote_artifact_uri)
+        mlflow.set_tag("remote_artifact_uri", remote_artifact_uri)
     metrics_file = os.path.join(artifact_uri, "metrics.json")
+    manifest_file = os.path.join(artifact_uri, "manifest.json")
     if os.path.exists(metrics_file):
         mlflow.log_artifact(metrics_file)
+    if os.path.exists(manifest_file):
+        mlflow.log_artifact(manifest_file)
 """
     env = subprocess_env()
     env["MLFLOW_PAYLOAD"] = json.dumps(payload)
@@ -326,20 +450,31 @@ def evaluate_agent_dag():
         metrics_path = run_dir / "metrics.json"
         metrics_path.write_text(json.dumps(metrics, indent=2) + "\n")
 
-        manifest = {
-            "run_id": run_config["run_id"],
-            "artifact_root": str(run_dir),
-            "config": str(run_dir / "config.json"),
-            "preds": run_config["preds_path"],
-            "eval_report": str(eval_report_path),
-            "eval_logs": str(run_dir / "run-eval" / "logs"),
-            "metrics": str(metrics_path),
-        }
+        remote_artifact_uri = None
+        try:
+            remote_artifact_uri = upload_run_to_object_storage(run_dir, run_config["run_id"])
+        except Exception:
+            logger.exception(
+                "Object storage upload failed; local artifacts remain at %s",
+                run_dir,
+            )
+
+        manifest = build_manifest(
+            run_dir,
+            run_config,
+            eval_report_path,
+            remote_artifact_uri=remote_artifact_uri,
+        )
         manifest_path = run_dir / "manifest.json"
         manifest_path.write_text(json.dumps(manifest, indent=2) + "\n")
 
         try:
-            log_mlflow_run(run_config, metrics, str(run_dir))
+            log_mlflow_run(
+                run_config,
+                metrics,
+                str(run_dir),
+                remote_artifact_uri=remote_artifact_uri,
+            )
         except Exception:
             logger.exception("MLflow logging failed; run artifacts are still on disk at %s", run_dir)
 
