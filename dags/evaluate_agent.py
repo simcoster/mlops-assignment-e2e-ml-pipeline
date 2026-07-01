@@ -47,6 +47,30 @@ def subprocess_env() -> dict[str, str]:
     }
 
 
+def resolve_swebench_config_path() -> Path:
+    """Return path to mini-swe-agent SWE-bench benchmark config."""
+    candidates = [
+        PROJECT_ROOT / "mini-swe-agent/src/minisweagent/config/benchmarks/swebench.yaml",
+        PROJECT_ROOT.parent / "mini-swe-agent/src/minisweagent/config/benchmarks/swebench.yaml",
+    ]
+    venv_site_packages = PROJECT_ROOT / ".venv/lib"
+    if venv_site_packages.exists():
+        candidates.extend(
+            path
+            for path in venv_site_packages.glob(
+                "python*/site-packages/minisweagent/config/benchmarks/swebench.yaml"
+            )
+        )
+
+    for path in candidates:
+        if path.exists():
+            return path
+
+    raise FileNotFoundError(
+        "SWE-bench agent config not found. Run `uv sync` in the project or clone mini-swe-agent."
+    )
+
+
 def build_run_config(params: dict) -> dict:
     run_id = (params.get("run_id") or "").strip()
     if not run_id or run_id.lower() == "auto":
@@ -103,6 +127,8 @@ def run_agent_batch(run_config: dict, run_dir: Path) -> Path:
         run_config["task_slice"],
         "--workers",
         str(run_config["workers"]),
+        "--config",
+        str(resolve_swebench_config_path()),
         "-o",
         str(agent_dir),
         "-c",
