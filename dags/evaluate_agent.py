@@ -51,6 +51,7 @@ def pipeline_mounts() -> list[Mount]:
     mounts = [
         Mount(source=f"{host_root}/runs", target="/mlops-assignment/runs", type="bind"),
         Mount(source=f"{host_root}/logs", target="/mlops-assignment/logs", type="bind"),
+        Mount(source="/var/run/docker.sock", target="/var/run/docker.sock", type="bind"),
     ]
     env_file = HOST_PROJECT_ROOT / ".env"
     if env_file.exists():
@@ -106,13 +107,14 @@ def evaluate_agent_dag():
         image=PIPELINE_IMAGE,
         api_version="auto",
         auto_remove="force",
-        command=["bash", "scripts/docker-run-agent.sh"],
+        command=["bash", "{{ 'scripts/docker-run-agent.sh' }}"],
         environment={
             "RUN_DIR": docker_run_dir_template(),
             "MSWEA_COST_TRACKING": "ignore_errors",
         },
         mounts=pipeline_mounts(),
         docker_url=DOCKER_URL,
+        mount_tmp_dir=False,
         network_mode="bridge",
         execution_timeout=timedelta(hours=6),
         retries=1,
@@ -124,13 +126,14 @@ def evaluate_agent_dag():
         image=PIPELINE_IMAGE,
         api_version="auto",
         auto_remove="force",
-        command=["bash", "scripts/docker-run-eval.sh"],
+        command=["bash", "{{ 'scripts/docker-run-eval.sh' }}"],
         environment={
             "RUN_DIR": docker_run_dir_template(),
             "MSWEA_COST_TRACKING": "ignore_errors",
         },
         mounts=pipeline_mounts(),
         docker_url=DOCKER_URL,
+        mount_tmp_dir=False,
         network_mode="bridge",
         execution_timeout=timedelta(hours=4),
         retries=1,

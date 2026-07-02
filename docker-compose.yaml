@@ -2,11 +2,11 @@
 #
 # Prerequisites:
 #   1. Copy .env.example to .env and set NEBIUS_API_KEY (and optional S3 vars).
-#   2. export AIRFLOW_UID=$(id -u)
-#   3. export PIPELINE_HOST_ROOT=$(pwd)   # absolute host path for DockerOperator bind mounts
+#   2. export PIPELINE_HOST_ROOT=$(pwd)   # absolute host path for DockerOperator bind mounts
+#      (or set PIPELINE_HOST_ROOT and DOCKER_GID in .env)
 #   4. bash scripts/build-pipeline-image.sh
 #   5. docker compose up airflow-init
-#   6. docker compose up -d
+#   6. docker compose up -d --wait
 #
 # Airflow UI: http://localhost:8080  (admin / admin)
 # MLflow UI:  http://localhost:5000
@@ -32,11 +32,14 @@ x-airflow-common:
     PIPELINE_HOST_ROOT: ${PIPELINE_HOST_ROOT:?Set PIPELINE_HOST_ROOT to the absolute host project path}
     PIPELINE_IMAGE: ${PIPELINE_IMAGE:-mlops-pipeline:latest}
     MLFLOW_TRACKING_URI: http://mlflow:5000
+    PYTHONPATH: /opt/mlops-assignment
   volumes:
     - ${PIPELINE_HOST_ROOT}:/opt/mlops-assignment
     - ./logs/airflow:/opt/airflow/logs
     - /var/run/docker.sock:/var/run/docker.sock
   user: "${AIRFLOW_UID:-50000}:0"
+  group_add:
+    - "${DOCKER_GID:?Set DOCKER_GID to the host docker group id (getent group docker | cut -d: -f3)}"
   depends_on:
     postgres:
       condition: service_healthy
@@ -64,21 +67,41 @@ services:
       - bash
       - -c
       - |
-        pip install --no-cache-dir 'mlflow>=2.20.0' \
+        echo "MLflow UI: http://localhost:5000" \
+        && pip install --no-cache-dir 'mlflow>=2.20.0' \
         && mlflow server \
           --host 0.0.0.0 \
           --port 5000 \
+          --serve-artifacts \
+          --allowed-hosts "mlflow,mlflow:5000,localhost:*,127.0.0.1:*" \
           --backend-store-uri sqlite:////mlflow/mlflow.db \
           --default-artifact-root /mlflow/artifacts
     ports:
       - "5000:5000"
     volumes:
       - mlflow-data:/mlflow
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "python",
+          "-c",
+          "import urllib.request; urllib.request.urlopen('http://127.0.0.1:5000')",
+        ]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 120s
     restart: always
 
   airflow-webserver:
     <<: *airflow-common
-    command: webserver
+    command:
+      - bash
+      - -c
+      - |
+        echo "Airflow UI: http://localhost:8080  (admin / admin)"
+        exec airflow webserver
     ports:
       - "8080:8080"
     healthcheck:
@@ -109,18 +132,16 @@ services:
         mkdir -p /opt/mlops-assignment/runs /opt/mlops-assignment/logs
         airflow db migrate
         airflow users create \
-          --username "${_AIRFLOW_WWW_USER_USERNAME}" \
-          --password "${_AIRFLOW_WWW_USER_PASSWORD}" \
+          --username "${AIRFLOW_ADMIN_USERNAME:-admin}" \
+          --password "${AIRFLOW_ADMIN_PASSWORD:-admin}" \
           --firstname Admin \
           --lastname User \
           --role Admin \
           --email admin@example.com || true
     environment:
       <<: *airflow-common-env
-      _AIRFLOW_DB_MIGRATE: "true"
-      _AIRFLOW_WWW_USER_CREATE: "true"
-      _AIRFLOW_WWW_USER_USERNAME: ${_AIRFLOW_WWW_USER_USERNAME:-admin}
-      _AIRFLOW_WWW_USER_PASSWORD: ${_AIRFLOW_WWW_USER_PASSWORD:-admin}
+      AIRFLOW_ADMIN_USERNAME: ${AIRFLOW_ADMIN_USERNAME:-admin}
+      AIRFLOW_ADMIN_PASSWORD: ${AIRFLOW_ADMIN_PASSWORD:-admin}
     depends_on:
       postgres:
         condition: service_healthy

@@ -349,6 +349,7 @@ def log_mlflow_run(
     )
     mlflow.set_tracking_uri(tracking_uri)
     mlflow.set_experiment("evaluate_agent")
+    remote_tracking = tracking_uri.startswith(("http://", "https://"))
 
     with mlflow.start_run(run_name=run_config["run_id"]):
         mlflow.log_params(
@@ -370,10 +371,11 @@ def log_mlflow_run(
 
         metrics_file = Path(artifact_uri) / "metrics.json"
         manifest_file = Path(artifact_uri) / "manifest.json"
-        if metrics_file.exists():
-            mlflow.log_artifact(str(metrics_file))
-        if manifest_file.exists():
-            mlflow.log_artifact(str(manifest_file))
+        if not remote_tracking:
+            if metrics_file.exists():
+                mlflow.log_artifact(str(metrics_file))
+            if manifest_file.exists():
+                mlflow.log_artifact(str(manifest_file))
 
 
 def resolve_eval_report_path(run_dir: Path, run_config: dict) -> Path:
