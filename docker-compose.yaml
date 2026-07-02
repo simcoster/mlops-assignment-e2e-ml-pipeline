@@ -10,6 +10,8 @@
 #
 # Airflow UI: http://localhost:8080  (admin / admin)
 # MLflow UI:  http://localhost:5000
+# MinIO API:  http://localhost:9000  (minioadmin / minioadmin)
+# MinIO UI:   http://localhost:9001
 
 x-airflow-common:
   &airflow-common
@@ -33,6 +35,14 @@ x-airflow-common:
     PIPELINE_IMAGE: ${PIPELINE_IMAGE:-mlops-pipeline:latest}
     MLFLOW_TRACKING_URI: http://mlflow:5000
     PYTHONPATH: /opt/mlops-assignment
+    GIT_PYTHON_REFRESH: quiet
+    S3_BUCKET: ${S3_BUCKET:-mlops-runs}
+    S3_PREFIX: ${S3_PREFIX:-runs}
+    AWS_ACCESS_KEY_ID: ${AWS_ACCESS_KEY_ID:-minioadmin}
+    AWS_SECRET_ACCESS_KEY: ${AWS_SECRET_ACCESS_KEY:-minioadmin}
+    AWS_DEFAULT_REGION: ${AWS_DEFAULT_REGION:-us-east-1}
+    AWS_ENDPOINT_URL: ${AWS_ENDPOINT_URL:-http://minio:9000}
+    ARTIFACTS_S3_URI: ${ARTIFACTS_S3_URI:-}
   volumes:
     - ${PIPELINE_HOST_ROOT}:/opt/mlops-assignment
     - ./logs/airflow:/opt/airflow/logs
@@ -94,6 +104,42 @@ services:
       start_period: 120s
     restart: always
 
+  minio:
+    image: minio/minio:latest
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:-minioadmin}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:-minioadmin}
+    ports:
+      - "9000:9000"
+      - "9001:9001"
+    volumes:
+      - minio-data:/data
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+    restart: always
+
+  minio-init:
+    image: minio/mc:latest
+    depends_on:
+      minio:
+        condition: service_healthy
+    entrypoint: /bin/sh
+    command:
+      - -c
+      - |
+        mc alias set local http://minio:9000 "$${MINIO_ROOT_USER}" "$${MINIO_ROOT_PASSWORD}"
+        mc mb "local/$${S3_BUCKET}" --ignore-existing
+        exit 0
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:-minioadmin}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:-minioadmin}
+      S3_BUCKET: ${S3_BUCKET:-mlops-runs}
+
   airflow-webserver:
     <<: *airflow-common
     command:
@@ -149,3 +195,4 @@ services:
 volumes:
   postgres-db-volume:
   mlflow-data:
+  minio-data:

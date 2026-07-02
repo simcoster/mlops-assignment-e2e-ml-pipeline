@@ -17,10 +17,12 @@ bash scripts/build-pipeline-image.sh
 echo "Initializing Airflow database..."
 docker compose up airflow-init
 
-echo "Starting Airflow and MLflow (waiting until healthy)..."
+echo "Starting Airflow, MLflow, and MinIO (waiting until healthy)..."
 docker compose up -d --wait
 
 echo ""
 echo "Services are ready:"
 echo "Airflow UI: http://localhost:8080  (admin / admin)"
 echo "MLflow UI:  http://localhost:5000"
+echo "MinIO API:  http://localhost:9000  (minioadmin / minioadmin)"
+echo "MinIO UI:   http://localhost:9001"

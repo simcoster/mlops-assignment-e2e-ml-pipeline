@@ -328,8 +328,20 @@ def upload_run_to_object_storage(run_dir: Path, run_id: str) -> str | None:
         client_kwargs["endpoint_url"] = settings["AWS_ENDPOINT_URL"]
     if settings["AWS_DEFAULT_REGION"]:
         client_kwargs["region_name"] = settings["AWS_DEFAULT_REGION"]
+    if settings["AWS_ACCESS_KEY_ID"]:
+        client_kwargs["aws_access_key_id"] = settings["AWS_ACCESS_KEY_ID"]
+    if settings["AWS_SECRET_ACCESS_KEY"]:
+        client_kwargs["aws_secret_access_key"] = settings["AWS_SECRET_ACCESS_KEY"]
 
-    client = boto3.client("s3", config=Config(signature_version="s3v4"), **client_kwargs)
+    client = boto3.client(
+        "s3",
+        config=Config(signature_version="s3v4", s3={"addressing_style": "path"}),
+        **client_kwargs,
+    )
+    try:
+        client.head_bucket(Bucket=bucket)
+    except Exception:
+        client.create_bucket(Bucket=bucket)
     client.upload_file(str(archive_path), bucket, key)
     archive_path.unlink(missing_ok=True)
     return f"s3://{bucket}/{key}"
@@ -341,6 +353,7 @@ def log_mlflow_run(
     artifact_uri: str,
     remote_artifact_uri: str | None = None,
 ) -> None:
+    os.environ.setdefault("GIT_PYTHON_REFRESH", "quiet")
     import mlflow
 
     tracking_uri = os.getenv(
