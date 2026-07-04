@@ -75,19 +75,23 @@ def pipeline_mounts() -> list[Mount]:
     params={
         "split": Param("test", type="string", description="SWE-bench dataset split"),
         "subset": Param("verified", type="string", description="SWE-bench subset name"),
-        "workers": Param(3, type="integer", description="Parallel workers for agent and eval"),
+        "workers": Param(1, type="integer", description="Parallel workers for agent and eval"),
         "model": Param(
             "nebius/moonshotai/Kimi-K2.6",
             type="string",
             description="Model passed to mini-swe-agent",
         ),
-        "task_slice": Param("0:3", type="string", description="Instance slice, e.g. 0:3"),
+        "task_slice": Param("0:1", type="string", description="Instance slice, e.g. 0:1"),
         "run_id": Param(
             "auto",
             type="string",
             description="Run ID ('auto' or empty = auto-generated timestamp)",
         ),
-        "cost_limit": Param(0, type="number", description="Agent cost limit (0 = disabled)"),
+        "cost_limit": Param(
+            1.0,
+            type="number",
+            description="Max agent spend in USD per run (must be > 0; also caps API calls)",
+        ),
     },
 )
 def evaluate_agent_dag():

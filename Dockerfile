@@ -20,5 +20,6 @@ ENV PATH="/mlops-assignment/.venv/bin:$PATH"
 
 COPY pipeline pipeline/
 COPY scripts scripts/
+COPY config config/
 
 RUN chmod +x scripts/*.sh

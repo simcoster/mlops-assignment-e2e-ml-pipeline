@@ -23,6 +23,10 @@ SUBSET_TO_DATASET = {
 
 logger = logging.getLogger(__name__)
 
+LITELLM_MODEL_REGISTRY = PROJECT_ROOT / "config" / "litellm_model_registry.json"
+DEFAULT_COST_LIMIT = float(os.getenv("AGENT_COST_LIMIT_DEFAULT", "1.0"))
+DEFAULT_CALLS_PER_DOLLAR = int(os.getenv("AGENT_CALLS_PER_DOLLAR", "20"))
+
 
 def load_env_file(path: Path) -> dict[str, str]:
     """Load KEY=VALUE lines from a .env file (no quotes/expansion)."""
@@ -39,19 +43,65 @@ def load_env_file(path: Path) -> dict[str, str]:
 
 
 def subprocess_env() -> dict[str, str]:
-    return {
-        **os.environ,
-        **load_env_file(PROJECT_ROOT / ".env"),
-        "MSWEA_COST_TRACKING": "ignore_errors",
-    }
+    return {**os.environ, **load_env_file(PROJECT_ROOT / ".env")}
+
+
+def parse_task_slice_count(task_slice: str) -> int:
+    start, end = (part.strip() for part in task_slice.split(":", 1))
+    return max(1, int(end) - int(start))
+
+
+def resolve_cost_limit(params: dict) -> float:
+    """Require a positive per-run spend cap (0 disables tracking and is rejected)."""
+    raw = params.get("cost_limit", DEFAULT_COST_LIMIT)
+    cost_limit = float(raw)
+    if cost_limit <= 0:
+        cost_limit = DEFAULT_COST_LIMIT
+    if cost_limit <= 0:
+        raise ValueError(
+            "cost_limit must be > 0. Set the DAG param or AGENT_COST_LIMIT_DEFAULT in .env."
+        )
+    return cost_limit
+
+
+def resolve_call_limit(run_config: dict) -> int:
+    explicit = os.getenv("AGENT_CALL_LIMIT", "").strip()
+    if explicit:
+        return max(1, int(explicit))
+    return max(10, int(run_config["cost_limit"] * DEFAULT_CALLS_PER_DOLLAR))
+
+
+def resolve_step_limit(run_config: dict, call_limit: int) -> int:
+    explicit = os.getenv("AGENT_STEP_LIMIT", "").strip()
+    if explicit:
+        return max(1, int(explicit))
+    per_instance = max(10, call_limit // parse_task_slice_count(run_config["task_slice"]))
+    return min(250, per_instance)
+
+
+def resolve_litellm_model_registry() -> Path:
+    if not LITELLM_MODEL_REGISTRY.exists():
+        raise FileNotFoundError(
+            f"Missing LiteLLM model registry at {LITELLM_MODEL_REGISTRY}. "
+            "Cost limits require model pricing for Nebius models."
+        )
+    return LITELLM_MODEL_REGISTRY
+
+
+def agent_subprocess_env(run_config: dict) -> dict[str, str]:
+    """Environment for mini-swe-agent with enforced spend and call limits."""
+    call_limit = run_config["call_limit"]
+    env = subprocess_env()
+    env["MSWEA_GLOBAL_COST_LIMIT"] = str(run_config["cost_limit"])
+    env["MSWEA_GLOBAL_CALL_LIMIT"] = str(call_limit)
+    env["LITELLM_MODEL_REGISTRY_PATH"] = str(resolve_litellm_model_registry())
+    env.pop("MSWEA_COST_TRACKING", None)
+    return env
 
 
 def docker_pipeline_env(run_dir: str) -> dict[str, str]:
     """Environment for DockerOperator pipeline containers."""
-    env = {
-        "RUN_DIR": run_dir,
-        "MSWEA_COST_TRACKING": "ignore_errors",
-    }
+    env = {"RUN_DIR": run_dir}
     for key in ("NEBIUS_API_KEY", "NEBIUS_ADMIN_KEY"):
         value = load_env_file(PROJECT_ROOT / ".env").get(key)
         if value:
@@ -92,7 +142,12 @@ def build_run_config(params: dict) -> dict:
     dataset_name = SUBSET_TO_DATASET.get(subset, subset)
     model = params["model"]
     workers = int(params["workers"])
-    cost_limit = float(params["cost_limit"])
+    cost_limit = resolve_cost_limit(params)
+    call_limit = resolve_call_limit({"cost_limit": cost_limit, "task_slice": params["task_slice"]})
+    step_limit = resolve_step_limit(
+        {"task_slice": params["task_slice"]},
+        call_limit,
+    )
 
     return {
         "run_id": run_id,
@@ -103,6 +158,8 @@ def build_run_config(params: dict) -> dict:
         "task_slice": params["task_slice"],
         "workers": workers,
         "cost_limit": cost_limit,
+        "call_limit": call_limit,
+        "step_limit": step_limit,
         "model_sanitized": model.replace("/", "__"),
     }
 
@@ -151,6 +208,7 @@ def organize_agent_artifacts(agent_dir: Path) -> Path:
 
 def run_agent_batch(run_config: dict, run_dir: Path) -> Path:
     agent_dir = run_dir / "run-agent"
+    registry_path = resolve_litellm_model_registry()
     cmd = [
         "uv",
         "run",
@@ -172,8 +230,21 @@ def run_agent_batch(run_config: dict, run_dir: Path) -> Path:
         str(agent_dir),
         "-c",
         f"agent.cost_limit={run_config['cost_limit']}",
+        "-c",
+        f"agent.step_limit={run_config['step_limit']}",
+        "-c",
+        f"model.litellm_model_registry={registry_path}",
+        "-c",
+        "model.cost_tracking=default",
     ]
-    subprocess.run(cmd, cwd=PROJECT_ROOT, env=subprocess_env(), check=True)
+    logger.info(
+        "Agent limits for run %s: cost_limit=$%.2f call_limit=%s step_limit=%s",
+        run_config["run_id"],
+        run_config["cost_limit"],
+        run_config["call_limit"],
+        run_config["step_limit"],
+    )
+    subprocess.run(cmd, cwd=PROJECT_ROOT, env=agent_subprocess_env(run_config), check=True)
     preds_path = agent_dir / "preds.json"
     if not preds_path.exists():
         raise FileNotFoundError(f"Expected predictions file at {preds_path}")
@@ -387,6 +458,8 @@ def log_mlflow_run(
                 "task_slice": str(run_config["task_slice"]),
                 "workers": str(run_config["workers"]),
                 "cost_limit": str(run_config["cost_limit"]),
+                "call_limit": str(run_config.get("call_limit", "")),
+                "step_limit": str(run_config.get("step_limit", "")),
             }
         )
         mlflow.log_metrics(numeric_metrics_for_mlflow(metrics))
