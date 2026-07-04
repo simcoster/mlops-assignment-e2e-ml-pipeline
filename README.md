@@ -4,7 +4,9 @@
 
 **Where**: Nebius Academy course [AI Performance Engineering](https://academy.nebius.com/ai-engineering-il), MLOps module, lecture #6, "End-to-end ML pipeline".
 
-**Author**: Simon Karasik.
+**Author**: Omri Simcovich.
+
+**Submission**: Implementation details, deployment, and a completed run walkthrough are in [`REPORT.md`](REPORT.md).
 
 **Learning objective**: Get hands-on experience turning an ad-hoc coding-agent evaluation script into an automated, observable, versioned, and durable Airflow pipeline with a structured data footprint: datasets, artifacts, metadata, metrics, logs, and trajectories.
 

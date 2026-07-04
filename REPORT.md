@@ -93,11 +93,11 @@ Screenshots: `screenshots/airflow_dag.png`, `screenshots/mlflow_runs.png`, `scre
 {
   "split": "test",
   "subset": "verified",
-  "workers": 3,
+  "workers": 1,
   "model": "nebius/moonshotai/Kimi-K2.6",
-  "task_slice": "0:3",
+  "task_slice": "0:1",
   "run_id": "auto",
-  "cost_limit": 0
+  "cost_limit": 1.0
 }
 ```
 
@@ -105,7 +105,7 @@ Screenshots: `screenshots/airflow_dag.png`, `screenshots/mlflow_runs.png`, `scre
 
 ```bash
 docker compose exec airflow-scheduler airflow dags trigger evaluate_agent \
-  --conf '{"split":"test","subset":"verified","workers":3,"task_slice":"0:3","run_id":"auto","cost_limit":0}'
+  --conf '{"split":"test","subset":"verified","workers":1,"task_slice":"0:1","run_id":"auto","cost_limit":1.0}'
 ```
 
 ### Parameters
@@ -114,13 +114,25 @@ docker compose exec airflow-scheduler airflow dags trigger evaluate_agent \
 |-------|----------|---------|-------------|
 | `split` | yes | `test` | SWE-bench split |
 | `subset` | yes | `verified` | SWE-bench subset |
-| `workers` | yes | `3` | Parallel workers for agent + eval |
+| `workers` | yes | `1` | Parallel workers for agent + eval |
 | `model` | no | `nebius/moonshotai/Kimi-K2.6` | LLM for mini-swe-agent |
-| `task_slice` | no | `0:3` | Instance slice, e.g. `0:1` or `0:3` |
+| `task_slice` | no | `0:1` | Instance slice, e.g. `0:1` or `4:5` |
 | `run_id` | no | `auto` | Run folder name; `auto` → timestamped ID |
-| `cost_limit` | no | `0` | Agent cost limit (`0` = disabled) |
+| `cost_limit` | no | `1.0` | Max agent spend in USD per run (must be > 0) |
 
 `workers` controls parallelism **inside** the agent/eval containers (not Airflow task parallelism). Use `workers` ≤ number of instances in `task_slice`.
+
+### Cost limits
+
+Agent spend is capped in three ways:
+
+1. **`agent.cost_limit`** — per-instance dollar budget passed to mini-swe-agent
+2. **`MSWEA_GLOBAL_COST_LIMIT`** — process-wide dollar cap (same value as `cost_limit`)
+3. **`MSWEA_GLOBAL_CALL_LIMIT` / `agent.step_limit`** — hard cap on API calls (~20 calls per $1)
+
+Nebius model pricing is registered in `config/litellm_model_registry.json` so LiteLLM can track real token costs. Values of `cost_limit <= 0` are rejected and fall back to `AGENT_COST_LIMIT_DEFAULT` in `.env` (default `$1.00`).
+
+For a cheap smoke run, use `task_slice: "0:1"`, `workers: 1`, and `cost_limit: 0.5`–`1.0`.
 
 ## Artifact layout
 
@@ -139,57 +151,53 @@ runs/<run-id>/
   manifest.json            # index of all important paths + remote URI
 ```
 
-`manifest.json` is the entry point for reconstructing a run. Example from completed run `run_with_storage`:
+`manifest.json` is the entry point for reconstructing a run. Example from completed run `run-20260704-112922`:
 
 ```json
 {
-  "run_id": "run_with_storage",
-  "artifact_root": ".../runs/run_with_storage",
+  "run_id": "run-20260704-112922",
+  "artifact_root": ".../runs/run-20260704-112922",
   "config": ".../config.json",
   "preds": ".../run-agent/preds.json",
   "trajectories": ".../run-agent/trajectories",
-  "trajectory_files": [".../astropy__astropy-12907.traj.json", "..."],
-  "eval_report": ".../run-eval/reports/nebius__moonshotai__Kimi-K2.6.run_with_storage.json",
+  "trajectory_files": [".../astropy__astropy-13453.traj.json"],
+  "eval_report": ".../run-eval/reports/nebius__moonshotai__Kimi-K2.6.run-20260704-112922.json",
   "eval_logs": ".../run-eval/logs",
   "metrics": ".../metrics.json",
-  "remote_artifact_uri": "s3://mlops-runs/runs/run_with_storage.tar.gz"
+  "remote_artifact_uri": "s3://mlops-runs/runs/run-20260704-112922.tar.gz"
 }
 ```
 
-Full run directories are gitignored (`runs/`). A committed example of the run metadata lives in `sample/run_manifest/` (`config.json`, `metrics.json`, `manifest.json`). A tarball for each run is uploaded to MinIO when `S3_BUCKET` is configured.
+Full run directories are gitignored (`runs/`). A committed example of run metadata lives in `sample/run_manifest/` (`config.json`, `metrics.json`, `manifest.json`). A tarball for each run is uploaded to MinIO when `S3_BUCKET` is configured.
 
 ## Completed evaluation example
 
-**Run ID:** `run_with_storage`
+**Run ID:** `run-20260704-112922` (documented in all three screenshots)
 
 | Field | Value |
 |-------|-------|
-| Config | `split=test`, `subset=verified`, `task_slice=0:3`, `workers=3` |
+| Config | `split=test`, `subset=verified`, `task_slice=4:5`, `workers=1` |
 | Model | `nebius/moonshotai/Kimi-K2.6` |
-| Instances | 3 (astropy-12907, astropy-13033, astropy-13236) |
-| Resolved | 0 / 3 |
-| Empty patches | 3 |
-| Resolve rate | 0.0 |
+| Instance | `astropy__astropy-13453` |
+| Resolved | 1 / 1 |
+| Resolve rate | 1.0 |
+| Cost limit | $0.50 |
 
-The pipeline completed end-to-end: agent trajectories were produced, SWE-bench evaluation ran, metrics were written, artifacts were uploaded to MinIO, and the run was logged in MLflow.
-
-**Note on empty patches:** The documented run `run_with_storage` produced empty patches (`resolve_rate=0.0`) because `NEBIUS_API_KEY` never reached the pipeline container. `pipeline_mounts()` checked for `.env` at the host path from inside the Airflow container (where that path is not visible), so the bind mount was skipped. This is fixed: the mount check uses `/opt/mlops-assignment/.env`, and `DockerOperator` also passes `NEBIUS_API_KEY` from `.env` explicitly.
+The pipeline completed end-to-end: the agent produced a patch, SWE-bench evaluation passed, metrics were written, artifacts were uploaded to MinIO, and the run was logged in MLflow. The Airflow grid view shows earlier failed attempts from debugging; the rightmost column is the successful run.
 
 **Remote artifact URI:**
 
 ```text
-s3://mlops-runs/runs/run_with_storage.tar.gz
+s3://mlops-runs/runs/run-20260704-112922.tar.gz
 ```
 
 Download from MinIO Console (http://localhost:9001) → bucket `mlops-runs` → prefix `runs/`, or with the AWS CLI pointed at `http://127.0.0.1:9000`.
-
-A smaller smoke run (`run-20260702-102800`, `task_slice=0:1`, `workers=1`) was also used to validate the DockerOperator path.
 
 ## MLflow tracking
 
 - **Experiment:** `evaluate_agent`
 - **UI:** http://localhost:5000
-- **Logged per run:** params (`split`, `subset`, `model`, `task_slice`, `workers`, `cost_limit`, `run_id`), metrics (`resolve_rate`, `resolved_instances`, etc.), tags (`artifact_path`, `remote_artifact_uri`)
+- **Logged per run:** params (`split`, `subset`, `model`, `task_slice`, `workers`, `cost_limit`, `call_limit`, `step_limit`, `run_id`), metrics (`resolve_rate`, `resolved_instances`, etc.), tags (`artifact_path`, `remote_artifact_uri`)
 
 From inside Docker Compose, Airflow uses `MLFLOW_TRACKING_URI=http://mlflow:5000`. From the host browser, use http://localhost:5000.
 
@@ -222,9 +230,9 @@ Trigger the DAG again with different params. A new `runs/<run-id>/` folder is cr
 If you have the local folder:
 
 ```bash
-ls runs/run_with_storage/
-cat runs/run_with_storage/manifest.json
-cat runs/run_with_storage/metrics.json
+ls runs/run-20260704-112922/
+cat runs/run-20260704-112922/manifest.json
+cat runs/run-20260704-112922/metrics.json
 ```
 
 If you only have the remote tarball:
@@ -257,6 +265,7 @@ bash scripts/docker-run-eval.sh   # inside pipeline container, or via equivalent
 |------|------|
 | `dags/evaluate_agent.py` | Main DAG |
 | `pipeline/run_steps.py` | Run helpers (config, agent, eval, metrics, upload, MLflow) |
+| `config/litellm_model_registry.json` | Nebius model pricing for cost tracking |
 | `Dockerfile` | Pipeline execution image |
 | `docker-compose.yaml` | Airflow + MLflow + MinIO + Postgres |
 | `run-docker-compose.sh` | One-command production startup |
