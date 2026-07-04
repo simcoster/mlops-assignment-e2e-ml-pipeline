@@ -17,6 +17,7 @@ from pipeline.run_steps import (
     build_manifest,
     build_run_config,
     collect_metrics,
+    docker_pipeline_env,
     load_run_config,
     log_mlflow_run,
     prepare_run_dir,
@@ -53,11 +54,11 @@ def pipeline_mounts() -> list[Mount]:
         Mount(source=f"{host_root}/logs", target="/mlops-assignment/logs", type="bind"),
         Mount(source="/var/run/docker.sock", target="/var/run/docker.sock", type="bind"),
     ]
-    env_file = HOST_PROJECT_ROOT / ".env"
-    if env_file.exists():
+    # Check .env where Airflow can read it; bind-mount using the host path for Docker.
+    if (PROJECT_ROOT / ".env").exists():
         mounts.append(
             Mount(
-                source=str(env_file),
+                source=str(HOST_PROJECT_ROOT / ".env"),
                 target="/mlops-assignment/.env",
                 type="bind",
                 read_only=True,
@@ -108,10 +109,7 @@ def evaluate_agent_dag():
         api_version="auto",
         auto_remove="force",
         command=["bash", "{{ 'scripts/docker-run-agent.sh' }}"],
-        environment={
-            "RUN_DIR": docker_run_dir_template(),
-            "MSWEA_COST_TRACKING": "ignore_errors",
-        },
+        environment=docker_pipeline_env(docker_run_dir_template()),
         mounts=pipeline_mounts(),
         docker_url=DOCKER_URL,
         mount_tmp_dir=False,
@@ -127,10 +125,7 @@ def evaluate_agent_dag():
         api_version="auto",
         auto_remove="force",
         command=["bash", "{{ 'scripts/docker-run-eval.sh' }}"],
-        environment={
-            "RUN_DIR": docker_run_dir_template(),
-            "MSWEA_COST_TRACKING": "ignore_errors",
-        },
+        environment=docker_pipeline_env(docker_run_dir_template()),
         mounts=pipeline_mounts(),
         docker_url=DOCKER_URL,
         mount_tmp_dir=False,

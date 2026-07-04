@@ -46,6 +46,19 @@ def subprocess_env() -> dict[str, str]:
     }
 
 
+def docker_pipeline_env(run_dir: str) -> dict[str, str]:
+    """Environment for DockerOperator pipeline containers."""
+    env = {
+        "RUN_DIR": run_dir,
+        "MSWEA_COST_TRACKING": "ignore_errors",
+    }
+    for key in ("NEBIUS_API_KEY", "NEBIUS_ADMIN_KEY"):
+        value = load_env_file(PROJECT_ROOT / ".env").get(key)
+        if value:
+            env[key] = value
+    return env
+
+
 def resolve_swebench_config_path() -> Path:
     """Return path to mini-swe-agent SWE-bench benchmark config."""
     candidates = [

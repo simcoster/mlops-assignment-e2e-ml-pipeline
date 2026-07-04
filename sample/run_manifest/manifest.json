@@ -1,0 +1,18 @@
+{
+  "run_id": "run_with_storage",
+  "artifact_root": "runs/run_with_storage",
+  "config": "runs/run_with_storage/config.json",
+  "preds": "runs/run_with_storage/run-agent/preds.json",
+  "trajectories": "runs/run_with_storage/run-agent/trajectories",
+  "trajectory_files": [
+    "runs/run_with_storage/run-agent/trajectories/astropy__astropy-12907/astropy__astropy-12907.traj.json",
+    "runs/run_with_storage/run-agent/trajectories/astropy__astropy-13033/astropy__astropy-13033.traj.json",
+    "runs/run_with_storage/run-agent/trajectories/astropy__astropy-13236/astropy__astropy-13236.traj.json"
+  ],
+  "eval_report": "runs/run_with_storage/run-eval/reports/nebius__moonshotai__Kimi-K2.6.run_with_storage.json",
+  "eval_logs": "runs/run_with_storage/run-eval/logs",
+  "eval_reports": "runs/run_with_storage/run-eval/reports",
+  "metrics": "runs/run_with_storage/metrics.json",
+  "agent_log": "runs/run_with_storage/run-agent/trajectories/minisweagent.log",
+  "remote_artifact_uri": "s3://mlops-runs/runs/run_with_storage.tar.gz"
+}

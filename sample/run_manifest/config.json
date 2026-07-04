@@ -1,0 +1,11 @@
+{
+  "run_id": "run_with_storage",
+  "split": "test",
+  "subset": "verified",
+  "dataset_name": "princeton-nlp/SWE-Bench_Verified",
+  "model": "nebius/moonshotai/Kimi-K2.6",
+  "task_slice": "0:3",
+  "workers": 3,
+  "cost_limit": 0.0,
+  "model_sanitized": "nebius__moonshotai__Kimi-K2.6"
+}

@@ -156,7 +156,7 @@ runs/<run-id>/
 }
 ```
 
-Full run directories are gitignored (`runs/`). A tarball for each run is uploaded to MinIO when `S3_BUCKET` is configured.
+Full run directories are gitignored (`runs/`). A committed example of the run metadata lives in `sample/run_manifest/` (`config.json`, `metrics.json`, `manifest.json`). A tarball for each run is uploaded to MinIO when `S3_BUCKET` is configured.
 
 ## Completed evaluation example
 
@@ -172,6 +172,8 @@ Full run directories are gitignored (`runs/`). A tarball for each run is uploade
 | Resolve rate | 0.0 |
 
 The pipeline completed end-to-end: agent trajectories were produced, SWE-bench evaluation ran, metrics were written, artifacts were uploaded to MinIO, and the run was logged in MLflow.
+
+**Note on empty patches:** The documented run `run_with_storage` produced empty patches (`resolve_rate=0.0`) because `NEBIUS_API_KEY` never reached the pipeline container. `pipeline_mounts()` checked for `.env` at the host path from inside the Airflow container (where that path is not visible), so the bind mount was skipped. This is fixed: the mount check uses `/opt/mlops-assignment/.env`, and `DockerOperator` also passes `NEBIUS_API_KEY` from `.env` explicitly.
 
 **Remote artifact URI:**
 
